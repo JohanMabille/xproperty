@@ -9,6 +9,7 @@
 #ifndef XPROPERTY_HPP
 #define XPROPERTY_HPP
 
+#include <any>
 #include <cstddef>
 #include <type_traits>
 #include <utility>
@@ -49,23 +50,6 @@ namespace xp
         reference operator()() noexcept;
         const_reference operator()() const noexcept;
 
-        owner_type operator()(const value_type& arg) && noexcept;
-        owner_type operator()(value_type&& arg) && noexcept;
-
-        template <class Arg, class... Args>
-        owner_type operator()(Arg&& arg, Args&&... args) && noexcept;
-
-// Workaround for MSVC: MSVC calls operator() const & overload instead
-// of operator() && overloads of temporaries in method chaining. Not
-// defining operator() const & overload results in a failing build
-// with error C3849.
-#ifdef _MSC_VER
-        owner_type operator()(const value_type& arg) const & noexcept;
-        owner_type operator()(value_type&& arg) const & noexcept;
-
-        template <class Arg, class... Args>
-        owner_type operator()(Arg&& arg, Args&&... args) const & noexcept;
-#endif
         const char* name() const noexcept;
 
         template <class V>
@@ -92,9 +76,9 @@ namespace xp
     //
     // The owner type must have two methods
     //
-    //  - template <class P, class V>
-    //    auto invoke_validators(const std::string& name, V&& proposal) const;
-    //  - void invoke_observers(const std::string& name) const;
+    //  - template <class T, class V>
+    //    auto invoke_validators(const char* name, std::any& owner, V&& proposal);
+    //  - void invoke_observers(const char* name, std::any& owner);
     //
     // The `T` typename is a universal reference on the proposed value.
     // The return type of `invoke_validator` must be convertible to the value_type of the property.
@@ -138,6 +122,7 @@ namespace xp
         , m_name(name)
         , m_value(std::forward<V>(value))
     {
+        owner->register_property(*this);
     }
 
     template <class T, class O>
@@ -148,10 +133,11 @@ namespace xp
                                       LV&& lambda_validator) XP_NOEXCEPT(value_type)
         : xproperty(owner, name, std::forward<V>(value))
     {
-        owner->validate(m_name, std::function<void(owner_type&, value_type&)>(
-            [lambda_validator](owner_type&, value_type& v)
-            { lambda_validator(v); }
-            ));
+        owner->template validate<O, T>(m_name,
+            [lambda_validator](O&, T& v)
+            {
+                lambda_validator(v);
+            });
     }
 
     template <class T, class O>
@@ -179,55 +165,6 @@ namespace xp
     }
 
     template <class T, class O>
-    inline auto xproperty<T, O>::operator()(const value_type& arg) && noexcept -> owner_type
-    {
-        m_value = arg;
-        return std::move(*owner());
-    }
-
-    template <class T, class O>
-    inline auto xproperty<T, O>::operator()(value_type&& arg) && noexcept -> owner_type
-    {
-        m_value = std::move(arg);
-        return std::move(*owner());
-    }
-
-    template <class T, class O>
-    template <class Arg, class... Args>
-    inline auto xproperty<T, O>::operator()(Arg&& arg, Args&&... args) && noexcept -> owner_type
-    {
-        m_value = value_type(std::forward<Arg>(arg), std::forward<Args>(args)...);
-        return std::move(*owner());
-    }
-
-#ifdef _MSC_VER
-    template <class T, class O>
-    inline auto xproperty<T, O>::operator()(const value_type& arg) const & noexcept -> owner_type
-    {
-        auto athis = const_cast<xproperty<T, O>*>(this);
-        athis->m_value = arg;
-        return std::move(*(athis->owner()));
-    }
-
-    template <class T, class O>
-    inline auto xproperty<T, O>::operator()(value_type&& arg) const & noexcept -> owner_type
-    {
-        auto athis = const_cast<xproperty<T, O>*>(this);
-        athis->m_value = std::move(arg);
-        return std::move(*(athis->owner()));
-    }
-
-    template <class T, class O>
-    template <class Arg, class... Args>
-    inline auto xproperty<T, O>::operator()(Arg&& arg, Args&&... args) const & noexcept -> owner_type
-    {
-        auto athis = const_cast<xproperty<T, O>*>(this);
-        athis->m_value = value_type(std::forward<Arg>(arg), std::forward<Args>(args)...);
-        return std::move(*(athis->owner()));
-    }
-#endif // _MSC_VER
-
-    template <class T, class O>
     inline const char* xproperty<T, O>::name() const noexcept
     {
         return m_name;
@@ -237,9 +174,10 @@ namespace xp
     template <class V>
     inline auto xproperty<T, O>::operator=(V&& value) -> reference
     {
-        m_value = owner()->template invoke_validators<T>(m_name, std::forward<V>(value));
+        auto owner_any = std::any(std::ref(*owner()));
+        m_value = owner()->template invoke_validators<T>(m_name, owner_any, std::forward<V>(value));
         owner()->notify(m_name, m_value);
-        owner()->invoke_observers(m_name);
+        owner()->invoke_observers(m_name, owner_any);
         return m_value;
     }
 
